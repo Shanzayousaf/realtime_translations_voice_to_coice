@@ -1,0 +1,163 @@
+version: "3.8"
+
+services:
+  # Model downloader - runs once to download models
+  model-downloader:
+    build:
+      context: ./model_downloader
+      dockerfile: Dockerfile
+    volumes:
+      - models:/app/models
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - MT_MODEL=${MT_MODEL:-facebook/m2m100_418M}
+      - TTS_MODEL=${TTS_MODEL:-fastspeech2_small}
+      - HIFIGAN_MODEL=${HIFIGAN_MODEL:-hifigan_v1}
+    profiles:
+      - download
+
+  # ASR Service
+  asr:
+    build:
+      context: ./asr
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/app/models
+    environment:
+      - ASR_HOST=${ASR_HOST:-0.0.0.0}
+      - ASR_PORT=${ASR_PORT:-8000}
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - USE_GPU=${USE_GPU:-true}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - VAD_ENABLED=${VAD_ENABLED:-true}
+      - CHUNK_DURATION_MS=${CHUNK_DURATION_MS:-200}
+      - MAX_QUEUE=${MAX_QUEUE:-16}
+      - MT_SERVICE_URL=http://mt:8001
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      - mlflow
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MT Service
+  mt:
+    build:
+      context: ./mt
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - models:/app/models
+    environment:
+      - MT_HOST=${MT_HOST:-0.0.0.0}
+      - MT_PORT=${MT_PORT:-8001}
+      - MT_MODEL=${MT_MODEL:-facebook/m2m100_418M}
+      - USE_GPU=${USE_GPU:-true}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - TTS_SERVICE_URL=http://tts:8002
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      - mlflow
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # TTS Service
+  tts:
+    build:
+      context: ./tts
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    volumes:
+      - models:/app/models
+    environment:
+      - TTS_HOST=${TTS_HOST:-0.0.0.0}
+      - TTS_PORT=${TTS_PORT:-8002}
+      - TTS_MODEL=${TTS_MODEL:-fastspeech2_small}
+      - HIFIGAN_MODEL=${HIFIGAN_MODEL:-hifigan_v1}
+      - USE_GPU=${USE_GPU:-true}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - TTS_RUNTIME=${TTS_RUNTIME:-pt}
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      - mlflow
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_ASR_URL=ws://localhost:8000
+      - VITE_MT_URL=http://localhost:8001
+      - VITE_TTS_URL=ws://localhost:8002
+    depends_on:
+      - asr
+      - mt
+      - tts
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5173"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MLflow tracking
+  mlflow:
+    image: python:3.9-slim
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=sqlite:///mlflow/mlflow.db
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    command: >
+      sh -c "pip install mlflow && 
+             mlflow server --backend-store-uri sqlite:///mlflow/mlflow.db 
+             --default-artifact-root /mlflow/artifacts 
+             --host 0.0.0.0 --port 5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  models:
+  mlflow_data:

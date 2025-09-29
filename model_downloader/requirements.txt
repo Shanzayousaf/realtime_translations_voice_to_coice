@@ -1,0 +1,8 @@
+torch==2.1.0
+torchaudio==2.1.0
+transformers==4.35.2
+openai-whisper==20231117
+TTS==0.22.0
+huggingface-hub==0.19.4
+tqdm==4.66.1
+requests==2.31.0
